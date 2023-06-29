@@ -1,23 +1,29 @@
+open Eio.Std
+
 let setup_log style_renderer level =
   Fmt_tty.setup_std_outputs ?style_renderer ();
   Logs.set_level level;
+  Logs_threaded.enable ();
   Prometheus_unix.Logging.init ?default_level:level ();
   Logs.set_reporter (Logs_fmt.reporter ());
   ()
 
 let or_die = function Ok x -> x | Error (`Msg m) -> failwith m
 
-let build ~solver ~switch ~log ~src:_ ~secrets:_ c =
-  Solver_worker.solve ~solver ~switch ~log c
+let build ~solver ~switch:_ ~log ~src:_ ~secrets:_ c =
+  Lwt_eio.run_eio @@ fun () ->
+  Ok (Solver_worker.solve ~solver ~log c)
 
 let main () registration_path capacity internal_workers name state_dir =
-  Lwt_main.run
-    (let vat = Capnp_rpc_unix.client_only_vat () in
-     let sr = Capnp_rpc_unix.Cap_file.load vat registration_path |> or_die in
-     let solver =
-       Solver_worker.Solver_request.create ~n_workers:internal_workers ()
-     in
-     Worker.run ~build:(build ~solver) ~capacity ~name ~state_dir sr)
+  Eio_main.run @@ fun env ->
+  Lwt_eio.with_event_loop ~clock:env#clock @@ fun () ->
+  let domain_mgr = env#domain_mgr in
+  let process_mgr = env#process_mgr in
+  let vat = Capnp_rpc_unix.client_only_vat () in
+  let sr = Capnp_rpc_unix.Cap_file.load vat registration_path |> or_die in
+  Switch.run @@ fun sw ->
+  let solver = Solver_service.create ~sw ~domain_mgr ~process_mgr ~n_workers:internal_workers in
+  Worker.run ~build:(build ~solver) ~capacity ~name ~state_dir sr
 
 open Cmdliner
 

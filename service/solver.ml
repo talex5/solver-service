@@ -1,15 +1,32 @@
+open Eio.Std
+
 module Worker = Solver_service_api.Worker
 module Solver = Opam_0install.Solver.Make (Git_context)
 module Store = Git_unix.Store
 
+type reply = (OpamPackage.t list, string) result * float
+
+type stream = (Solver_service_api.Worker.Solve_request.t * reply Promise.u) Eio.Stream.t
+
 let env (vars : Worker.Vars.t) v =
-  Opam_0install.Dir_context.std_env ~arch:vars.arch ~os:vars.os
-    ~os_distribution:vars.os_distribution ~os_version:vars.os_version
-    ~os_family:vars.os_family ~opam_version:vars.opam_version () v
+  match v with
+  | "arch" -> Some (OpamTypes.S vars.arch)
+  | "os" -> Some (OpamTypes.S vars.os)
+  | "os-distribution" -> Some (OpamTypes.S vars.os_distribution)
+  | "os-version" -> Some (OpamTypes.S vars.os_version)
+  | "os-family" -> Some (OpamTypes.S vars.os_family)
+  | "opam-version"  -> Some (OpamVariable.S vars.opam_version)
+  | "sys-ocaml-version" -> None
+  | "ocaml:native" -> Some (OpamTypes.B true)
+  | "enable-ocaml-beta-repository" -> None      (* Fake variable? *)
+  | _ ->
+    (* Disabled, as not thread-safe! *)
+    (* OpamConsole.warning "Unknown variable %S" v; *)
+    None
 
 let parse_opam (name, contents) =
   let pkg = OpamPackage.of_string name in
-  let opam = OpamFile.OPAM.read_from_string contents in
+  let opam = Git_context.opam_read_from_string_threadsafe contents in
   (OpamPackage.name pkg, (OpamPackage.version pkg, opam))
 
 let solve ~packages ~pins ~root_pkgs ~lower_bound (vars : Worker.Vars.t) =
@@ -27,76 +44,55 @@ let solve ~packages ~pins ~root_pkgs ~lower_bound (vars : Worker.Vars.t) =
   let t0 = Unix.gettimeofday () in
   let r = Solver.solve context (ocaml_package :: root_pkgs) in
   let t1 = Unix.gettimeofday () in
-  Printf.printf "%.2f\n" (t1 -. t0);
-  match r with
-  | Ok sels ->
-      let pkgs = Solver.packages_of_result sels in
-      Ok (List.map OpamPackage.to_string pkgs)
-  | Error diagnostics -> Error (Solver.diagnostics diagnostics)
+  let r =
+    match r with
+    | Ok sels -> Ok (Solver.packages_of_result sels)
+    | Error diagnostics -> Error (Solver.diagnostics diagnostics)
+  in
+  r, (t1 -. t0)
 
-let main commits =
-  let open Lwt.Infix in
-  let packages =
-    Lwt_main.run
+let last_index = ref None
+
+let main ~stores (stream:stream) =
+  Logs.info (fun f -> f "solver.ml:main");
+  let packages commits =
+    Eio.Mutex.use_ro Stores.git_lock @@ fun () ->
+    match !last_index with
+    | Some (k, v) when k = commits -> v
+    | _ ->
       (* Read all the package from all the given opam-repository repos,
        * and collate them into a single Map. *)
-      (Lwt_list.fold_left_s
-         (fun acc commit ->
-           let repo_url = commit.Remote_commit.repo in
-           let hash = Store.Hash.of_hex commit.Remote_commit.hash in
-           Opam_repository.open_store ~repo_url () >>= fun store ->
-           Git_context.read_packages ~acc store hash >>= fun packages ->
-           Opam_repository.close_store store >>= fun () -> Lwt.return packages)
-         OpamPackage.Name.Map.empty commits)
+      let v =
+        List.fold_left
+          (fun acc (repo_url, hash) ->
+             let store = Stores.get stores repo_url in
+             let hash = Store.Hash.of_hex hash in
+             Git_context.read_packages ~acc store hash
+          )
+          Git_context.empty_index commits
+      in
+      last_index := Some (commits, v);
+      v
   in
-  let rec aux () =
-    match input_line stdin with
-    | exception End_of_file -> ()
-    | len ->
-        let len = int_of_string len in
-        let data = really_input_string stdin len in
-        let request =
-          Worker.Solve_request.of_yojson (Yojson.Safe.from_string data)
-          |> Result.get_ok
-        in
-        let {
-          Worker.Solve_request.opam_repository_commits;
-          root_pkgs;
-          pinned_pkgs;
-          platforms;
-          lower_bound;
-        } =
-          request
-        in
-        assert (
-          List.for_all
-            (fun (repo, hash) -> List.mem (Remote_commit.v ~repo ~hash) commits)
-            opam_repository_commits);
-        let root_pkgs = List.map parse_opam root_pkgs in
-        let pinned_pkgs = List.map parse_opam pinned_pkgs in
-        let pins = root_pkgs @ pinned_pkgs |> OpamPackage.Name.Map.of_list in
-        let root_pkgs = List.map fst root_pkgs in
-        platforms
-        |> List.iter (fun (_id, platform) ->
-               let msg =
-                 match
-                   solve ~packages ~pins ~root_pkgs ~lower_bound platform
-                 with
-                 | Ok packages -> "+" ^ String.concat " " packages
-                 | Error msg -> "-" ^ msg
-               in
-               Printf.printf "%d\n%s%!" (String.length msg) msg);
-        aux ()
-  in
-  aux ()
-
-let main commit =
-  try main commit
-  with ex ->
-    Fmt.epr "solver bug: %a@." Fmt.exn ex;
-    let msg =
-      match ex with Failure msg -> msg | ex -> Printexc.to_string ex
+  while true do
+    let request, reply = Eio.Stream.take stream in
+    let {
+      Worker.Solve_request.opam_repository_commits;
+      root_pkgs;
+      pinned_pkgs;
+      platforms;
+      lower_bound;
+    } =
+      request
     in
-    let msg = "!" ^ msg in
-    Printf.printf "0.0\n%d\n%s%!" (String.length msg) msg;
-    raise ex
+    let packages = packages opam_repository_commits in
+    let root_pkgs = List.map parse_opam root_pkgs in
+    let pinned_pkgs = List.map parse_opam pinned_pkgs in
+    let pins = root_pkgs @ pinned_pkgs |> OpamPackage.Name.Map.of_list in
+    let root_pkgs = List.map fst root_pkgs in
+    platforms
+    |> List.iter (fun (_id, platform) ->
+        let r, time = solve ~packages ~pins ~root_pkgs ~lower_bound platform in
+        Promise.resolve reply (r, time)
+      )
+  done

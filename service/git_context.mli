@@ -1,10 +1,14 @@
 include Opam_0install.S.CONTEXT
 
+type index
+
+val empty_index : index
+
 val read_packages :
-  ?acc:OpamFile.OPAM.t OpamPackage.Version.Map.t OpamPackage.Name.Map.t ->
+  ?acc:index ->
   Git_unix.Store.t ->
   Git_unix.Store.Hash.t ->
-  OpamFile.OPAM.t OpamPackage.Version.Map.t OpamPackage.Name.Map.t Lwt.t
+  index
 (** [read_packages store commit] is an index of the opam files in [store] at
     [commit]. *)
 
@@ -14,7 +18,9 @@ val create :
   ?lower_bound:bool ->
   constraints:OpamFormula.version_constraint OpamPackage.Name.Map.t ->
   env:(string -> OpamVariable.variable_contents option) ->
-  packages:OpamFile.OPAM.t OpamPackage.Version.Map.t OpamPackage.Name.Map.t ->
+  packages:index ->
   with_beta_remote:bool ->
   unit ->
   t
+
+val opam_read_from_string_threadsafe : string -> OpamFile.OPAM.t

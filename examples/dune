@@ -4,6 +4,7 @@
  (names main submit)
  (package solver-service)
  (libraries
+  eio_main
   current_git
   capnp-rpc-unix
   solver-service-api

@@ -2,11 +2,15 @@ module Store = Git_unix.Store
 module Search = Git.Search.Make (Digestif.SHA1) (Store)
 open Lwt.Infix
 
+type index = OpamFile.OPAM.t OpamPackage.Version.Map.t Lazy.t OpamPackage.Name.Map.t
+
+let empty_index = OpamPackage.Name.Map.empty
+
 type rejection = UserConstraint of OpamFormula.atom | Unavailable
 
 type t = {
   env : string -> OpamVariable.variable_contents option;
-  packages : OpamFile.OPAM.t OpamPackage.Version.Map.t OpamPackage.Name.Map.t;
+  packages : index;
   pins : (OpamPackage.Version.t * OpamFile.OPAM.t) OpamPackage.Name.Map.t;
   constraints : OpamFormula.version_constraint OpamTypes.name_map;
       (* User-provided constraints *)
@@ -14,6 +18,8 @@ type t = {
   with_beta_remote : bool;
   lower_bound : bool;
 }
+
+let git_lock = Eio.Mutex.create ()
 
 let ocaml_beta_pkg = OpamPackage.of_string "ocaml-beta.enabled"
 
@@ -91,35 +97,36 @@ let candidates t name =
             (OpamPackage.Name.to_string name);
           []
       | Some versions ->
-          let versions =
-            if
-              t.with_beta_remote
-              && OpamPackage.Name.compare name (OpamPackage.name ocaml_beta_pkg)
-                 = 0
-            then
-              OpamPackage.Version.Map.add
-                (OpamPackage.version ocaml_beta_pkg)
-                ocaml_beta_opam versions
-            else versions
-          in
-          let user_constraints = user_restrictions t name in
-          OpamPackage.Version.Map.bindings versions
-          |> List.fast_sort (version_compare t.lower_bound)
-          |> List.rev_map (fun (v, opam) ->
-                 match user_constraints with
-                 | Some test
-                   when not
-                          (OpamFormula.check_version_formula
-                             (OpamFormula.Atom test) v) ->
-                     (v, Error (UserConstraint (name, Some test)))
-                 | _ ->
-                     let pkg = OpamPackage.create name v in
-                     (v, filter_available t pkg opam)))
+        let versions = Eio.Mutex.use_ro git_lock (fun () -> Lazy.force versions) in
+        let versions =
+          if
+            t.with_beta_remote
+            && OpamPackage.Name.compare name (OpamPackage.name ocaml_beta_pkg)
+               = 0
+          then
+            OpamPackage.Version.Map.add
+              (OpamPackage.version ocaml_beta_pkg)
+              ocaml_beta_opam versions
+          else versions
+        in
+        let user_constraints = user_restrictions t name in
+        OpamPackage.Version.Map.bindings versions
+        |> List.fast_sort (version_compare t.lower_bound)
+        |> List.rev_map (fun (v, opam) ->
+            match user_constraints with
+            | Some test
+              when not
+                  (OpamFormula.check_version_formula
+                     (OpamFormula.Atom test) v) ->
+              (v, Error (UserConstraint (name, Some test)))
+            | _ ->
+              let pkg = OpamPackage.create name v in
+              (v, filter_available t pkg opam)))
 
 let pp_rejection f = function
   | UserConstraint x ->
-      Fmt.pf f "Rejected by user-specified constraint %s"
-        (OpamFormula.string_of_atom x)
+    Fmt.pf f "Rejected by user-specified constraint %s"
+      (OpamFormula.string_of_atom x)
   | Unavailable -> Fmt.string f "Availability condition not satisfied"
 
 let read_dir store hash =
@@ -128,75 +135,77 @@ let read_dir store hash =
   | Ok (Git.Value.Tree tree) -> Some tree
   | Ok _ -> None
 
+let opam_lock = Mutex.create ()         (* https://github.com/ocaml/opam/issues/5591 *)
+
+let opam_read_from_string_threadsafe str =
+  Mutex.lock opam_lock;
+  let x = OpamFile.OPAM.read_from_string str in
+  Mutex.unlock opam_lock;
+  x
+
 let read_package store pkg hash =
   Search.find store hash (`Path [ "opam" ]) >>= function
   | None ->
-      Fmt.failwith "opam file not found for %s" (OpamPackage.to_string pkg)
+    Fmt.failwith "opam file not found for %s" (OpamPackage.to_string pkg)
   | Some hash -> (
       Store.read store hash >|= function
-      | Ok (Git.Value.Blob blob) ->
-          OpamFile.OPAM.read_from_string (Store.Value.Blob.to_string blob)
+      | Ok (Git.Value.Blob blob) -> opam_read_from_string_threadsafe (Store.Value.Blob.to_string blob)
       | _ ->
-          Fmt.failwith "Bad Git object type for %s!" (OpamPackage.to_string pkg)
-      )
+        Fmt.failwith "Bad Git object type for %s!" (OpamPackage.to_string pkg)
+    )
 
 (* Get a map of the versions inside [entry] (an entry under "packages") *)
 let read_versions store (entry : Store.Value.Tree.entry) =
   read_dir store entry.node >>= function
-  | None -> Lwt.return_none
+  | None -> Lwt.return OpamPackage.Version.Map.empty
   | Some tree ->
-      Store.Value.Tree.to_list tree
-      |> Lwt_list.fold_left_s
-           (fun acc (entry : Store.Value.Tree.entry) ->
-             match OpamPackage.of_string_opt entry.name with
-             | Some pkg ->
-                 read_package store pkg entry.node >|= fun opam ->
-                 OpamPackage.Version.Map.add pkg.version opam acc
-             | None ->
-                 OpamConsole.log "opam-0install" "Invalid package name %S"
-                   entry.name;
-                 Lwt.return acc)
-           OpamPackage.Version.Map.empty
-      >|= fun versions -> Some versions
+    Store.Value.Tree.to_list tree
+    |> Lwt_list.fold_left_s
+      (fun acc (entry : Store.Value.Tree.entry) ->
+         match OpamPackage.of_string_opt entry.name with
+         | Some pkg ->
+           read_package store pkg entry.node >|= fun opam ->
+           OpamPackage.Version.Map.add pkg.version opam acc
+         | None ->
+           OpamConsole.log "opam-0install" "Invalid package name %S"
+             entry.name;
+           Lwt.return acc)
+      OpamPackage.Version.Map.empty
 
-let merge_versions vs1 vs2 =
-  OpamPackage.Version.Map.merge
-    (fun _ v1 v2 ->
-      match (v1, v2) with
-      | None, _ -> v2
-      | Some _, None -> v1
-      | Some _, Some _ ->
-          (* Overwrite the v1 entry. This gives the semantics that that second
-             repo given to read_packages is an overlay on the first one. *)
-          v2)
-    vs1 vs2
+let read_packages ~store tree =
+  Store.Value.Tree.to_list tree
+  |> List.filter_map (fun (entry : Store.Value.Tree.entry) ->
+      match OpamPackage.Name.of_string entry.name with
+      | exception ex ->
+        OpamConsole.log "opam-0install"
+          "Invalid package name %S: %s" entry.name
+          (Printexc.to_string ex);
+        None
+      | name ->
+        Some (name, lazy (Lwt_eio.run_lwt_in_main (fun () -> read_versions store entry)))
+    )
+  |> OpamPackage.Name.Map.of_list
 
-let add_versions name versions packages_by_name =
-  OpamPackage.Name.Map.update name
-    (fun prev_versions -> merge_versions prev_versions versions)
-    OpamPackage.Version.Map.empty packages_by_name
+let overlay _name v1 v2 =
+  match (v1, v2) with
+  | None, _ -> v2
+  | Some _, None -> v1
+  | Some _, Some _ ->
+    (* Overwrite the v1 entry. This gives the semantics that that second
+       repo given to read_packages is an overlay on the first one. *)
+    v2
 
-let read_packages ?acc:(result_acc = OpamPackage.Name.Map.empty) store commit =
+let read_packages ?acc:(super=empty_index) store commit : index =
+  Lwt_eio.run_lwt_in_main @@ fun () -> 
   Search.find store commit (`Commit (`Path [ "packages" ])) >>= function
   | None -> Fmt.failwith "Failed to find packages directory!"
   | Some tree_hash -> (
       read_dir store tree_hash >>= function
       | None -> Fmt.failwith "'packages' is not a directory!"
       | Some tree ->
-          Store.Value.Tree.to_list tree
-          |> Lwt_list.fold_left_s
-               (fun acc (entry : Store.Value.Tree.entry) ->
-                 match OpamPackage.Name.of_string entry.name with
-                 | exception ex ->
-                     OpamConsole.log "opam-0install"
-                       "Invalid package name %S: %s" entry.name
-                       (Printexc.to_string ex);
-                     Lwt.return acc
-                 | name -> (
-                     read_versions store entry >|= function
-                     | None -> acc
-                     | Some versions -> add_versions name versions acc))
-               result_acc)
+        let packages = read_packages ~store tree in
+        Lwt.return (OpamPackage.Name.Map.merge overlay super packages)
+    )
 
 let create ?(test = OpamPackage.Name.Set.empty)
     ?(pins = OpamPackage.Name.Map.empty) ?(lower_bound = false) ~constraints

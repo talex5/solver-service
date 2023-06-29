@@ -1,7 +1,7 @@
 ; No-op test to attach stress.exe to the solver-service package
 
 (tests
- (names stress stress_submit)
+ (names stress) ; stress_submit)
  (package solver-worker)
- (libraries solver-worker current_ocluster logs.cli logs.fmt fmt.cli)
+ (libraries solver-service current_ocluster logs.cli logs.fmt fmt.cli logs.threaded fmt.tty capnp-rpc-unix eio_main)
  (action (progn)))

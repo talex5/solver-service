@@ -203,15 +203,7 @@ let loop ~switch t queue =
    admin has updated the local package version. *)
 let update_normal () = Lwt.return (fun () -> Lwt.return ())
 
-let run ?switch ?prune_threshold ~build ~capacity ~name ~state_dir
-    registration_service =
-  (match prune_threshold with
-  | None ->
-      Log.info (fun f ->
-          f "Prune threshold not set. Will not check for low disk-space!")
-  | Some frac when frac < 0.0 || frac > 100.0 ->
-      Fmt.invalid_arg "prune_threshold must be in the range 0 to 100"
-  | Some _ -> ());
+let run ?switch ~build ~capacity ~name ~state_dir registration_service =
   let t =
     {
       name;
@@ -224,6 +216,7 @@ let run ?switch ?prune_threshold ~build ~capacity ~name ~state_dir
       cancel = ignore;
     }
   in
+  Lwt_eio.run_lwt @@ fun () ->
   Lwt_switch.add_hook_or_exec switch (fun () ->
       Log.info (fun f -> f "Switch turned off. Will shut down.");
       t.cancel ();

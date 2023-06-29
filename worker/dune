@@ -7,11 +7,15 @@
 (executable
  (name main)
  (libraries
+  eio_main
+  lwt_eio
   dune-build-info
   logs.cli
+  logs.threaded
   fmt.cli
   fmt.tty
   prometheus-app.unix
+  capnp-rpc-unix
   solver-worker)
  (modules main worker))
 

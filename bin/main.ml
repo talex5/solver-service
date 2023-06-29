@@ -1,7 +1,5 @@
-open Solver_service
-open Lwt.Syntax
-module Service = Service.Make (Opam_repository)
-module Worker_process = Internal_worker.Worker_process
+open Eio.Std
+module Service = Solver_service
 
 let pp_timestamp f x =
   let open Unix in
@@ -37,6 +35,7 @@ let setup_log style_renderer level =
   ()
 
 let export service ~on:socket =
+  let open Lwt.Syntax in
   let restore =
     Capnp_rpc_net.Restorer.single
       (Capnp_rpc_net.Restorer.Id.public "solver")
@@ -60,38 +59,36 @@ let export service ~on:socket =
   in
   crashed
 
-let start_server address ~n_workers =
+let start_server ~sw ~process_mgr ~domain_mgr address ~n_workers =
+  let open Lwt.Syntax in
+  Lwt_eio.run_lwt @@ fun () ->
   let config =
     Capnp_rpc_unix.Vat_config.create ~secret_key:(`File "server.pem") address
   in
   let service_id =
     Capnp_rpc_unix.Vat_config.derived_id config "solver-service"
   in
-  let create_worker commits =
-    let cmd =
-      ("", [| Sys.argv.(0); "--worker"; Remote_commit.list_to_string commits |])
-    in
-    Worker_process.create cmd
-  in
-  let* service = Service.v ~n_workers ~create_worker in
+  let service = Service.create ~sw ~domain_mgr ~process_mgr ~n_workers in
+  let service = Service.capnp_service service in
   let restore = Capnp_rpc_net.Restorer.single service_id service in
   let+ vat = Capnp_rpc_unix.serve config ~restore in
   Capnp_rpc_unix.Vat.sturdy_uri vat service_id
 
-let main () hash address sockpath n_workers =
-  match hash with
-  | Some commits_str -> Solver.main (Remote_commit.list_of_string_or_fail commits_str)
+let main () address sockpath n_workers =
+  Eio_main.run @@ fun env ->
+  Switch.run @@ fun sw ->
+  let process_mgr = env#process_mgr in
+  Lwt_eio.with_event_loop ~clock:env#clock @@ fun () ->
+  match address with
+  | Some address ->
+    (* Run with a capnp address as the endpoint *)
+    let uri = start_server ~sw ~process_mgr ~domain_mgr:env#domain_mgr address ~n_workers in
+    Fmt.pr "Solver service running at: %a@." Uri.pp_hum uri;
+    Fiber.await_cancel ()
   | None ->
-    Eio_main.run @@ fun env ->
-    Lwt_eio.with_event_loop ~clock:env#clock @@ fun () ->
-    Lwt_eio.run_lwt @@ fun () ->
-    match address with
-    | Some address ->
-      (* Run with a capnp address as the endpoint *)
-      let* uri = start_server address ~n_workers in
-      Fmt.pr "Solver service running at: %a@." Uri.pp_hum uri;
-      fst @@ Lwt.wait ()
-    | None ->
+    ignore (sockpath, export);
+    assert false
+(*
       let socket =
         match sockpath with
         | Some path ->
@@ -112,6 +109,7 @@ let main () hash address sockpath n_workers =
       in
       let* service = Service.v ~n_workers ~create_worker in
       export service ~on:socket
+*)
 
 (* Command-line parsing *)
 
@@ -122,15 +120,9 @@ let setup_log =
   Term.(
     const setup_log $ Fmt_cli.style_renderer ~docs () $ Logs_cli.level ~docs ())
 
-let worker_commits =
-  Arg.value
-  @@ Arg.opt Arg.(some string) None
-  @@ Arg.info ~doc:"The hash commits of the worker." ~docv:"COMMITS"
-       [ "worker" ]
-
 let internal_workers =
   Arg.value
-  @@ Arg.opt Arg.int 20
+  @@ Arg.opt Arg.int (Domain.recommended_domain_count () - 1)
   @@ Arg.info ~doc:"The number of sub-process solving requests in parallel"
        ~docv:"N" [ "internal-workers" ]
 
@@ -164,7 +156,6 @@ let cmd =
     Term.(
       const main
       $ setup_log
-      $ worker_commits
       $ address
       $ sockpath
       $ internal_workers)

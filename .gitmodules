@@ -10,3 +10,6 @@
 	path = ocaml-dockerfile
 	url = https://github.com/ocurrent/ocaml-dockerfile.git
 	branch = master
+[submodule "opam-0install-solver"]
+	path = opam-0install-solver
+	url = https://github.com/ocaml-opam/opam-0install-solver.git
