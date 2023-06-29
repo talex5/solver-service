@@ -4,7 +4,8 @@
  (preprocess
   (pps ppx_deriving.std ppx_deriving_yojson))
  (libraries
-  lwt.unix
+  eio_main
+  lwt_eio
   solver-service-api
   ppx_deriving_yojson.runtime
   opam-0install

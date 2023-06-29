@@ -82,7 +82,9 @@ let main () hash address sockpath n_workers =
   match hash with
   | Some commits_str -> Solver.main (Remote_commit.list_of_string_or_fail commits_str)
   | None ->
-    Lwt_main.run @@
+    Eio_main.run @@ fun env ->
+    Lwt_eio.with_event_loop ~clock:env#clock @@ fun () ->
+    Lwt_eio.run_lwt @@ fun () ->
     match address with
     | Some address ->
       (* Run with a capnp address as the endpoint *)
