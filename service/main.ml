@@ -79,37 +79,37 @@ let start_server address ~n_workers =
   Capnp_rpc_unix.Vat.sturdy_uri vat service_id
 
 let main () hash address sockpath n_workers =
-  match (hash, address) with
-  | None, Some address ->
+  match hash with
+  | Some commits_str -> Solver.main (Remote_commit.list_of_string_or_fail commits_str)
+  | None ->
+    Lwt_main.run @@
+    match address with
+    | Some address ->
       (* Run with a capnp address as the endpoint *)
-      Lwt_main.run
-        (let* uri = start_server address ~n_workers in
-         Fmt.pr "Solver service running at: %a@." Uri.pp_hum uri;
-         fst @@ Lwt.wait ())
-  | None, None ->
+      let* uri = start_server address ~n_workers in
+      Fmt.pr "Solver service running at: %a@." Uri.pp_hum uri;
+      fst @@ Lwt.wait ()
+    | None ->
       let socket =
         match sockpath with
         | Some path ->
-            let sock = Unix.(socket PF_UNIX SOCK_STREAM 0) in
-            Unix.connect sock (ADDR_UNIX path);
-            Lwt_unix.of_unix_file_descr sock
+          let sock = Unix.(socket PF_UNIX SOCK_STREAM 0) in
+          Unix.connect sock (ADDR_UNIX path);
+          Lwt_unix.of_unix_file_descr sock
         | None -> Lwt_unix.stdin
       in
       (* Run locally reading from socket *)
-      Lwt_main.run
-        (let create_worker commits =
-           let cmd =
-             ( "",
-               [|
-                 Sys.argv.(0); "--worker"; Remote_commit.list_to_string commits;
-               |] )
-           in
-           Worker_process.create cmd
-         in
-         let* service = Service.v ~n_workers ~create_worker in
-         export service ~on:socket)
-  | Some commits_str, _ ->
-      Solver.main (Remote_commit.list_of_string_or_fail commits_str)
+      let create_worker commits =
+        let cmd =
+          ( "",
+            [|
+              Sys.argv.(0); "--worker"; Remote_commit.list_to_string commits;
+            |] )
+        in
+        Worker_process.create cmd
+      in
+      let* service = Service.v ~n_workers ~create_worker in
+      export service ~on:socket
 
 (* Command-line parsing *)
 
