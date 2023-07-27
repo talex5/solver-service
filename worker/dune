@@ -1,4 +1,0 @@
-(library
- (name solver_worker)
- (public_name solver-service.worker)
- (libraries ocluster-api solver-service prometheus-app))

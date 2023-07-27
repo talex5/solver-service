@@ -1,16 +1,10 @@
-; No-op test to attach stress.exe to the solver-service package
-
-(tests
- (names stress)
+(executable
+ (name stress)
+ (public_name test-solver)
  (package solver-service)
  (libraries
-  solver-service
-  ocluster-api
+  opam-0install
   logs.cli
   logs.fmt
   fmt.cli
-  fmt.tty
-  capnp-rpc-unix
-  lwt_eio
-  eio_main)
- (action (progn)))
+  fmt.tty))
