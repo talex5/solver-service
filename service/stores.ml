@@ -189,9 +189,12 @@ let create ~process_mgr ~cache_dir =
   }
 
 let oldest_commits_with t ~from repo_packages =
-  Eio.Semaphore.acquire oldest_commit;
-  Fun.protect ~finally:(fun () -> Eio.Semaphore.release oldest_commit) @@ fun () ->
-  Git_clone.oldest_commits_with t repo_packages ~from
+  (* Disable this, as waiting for subprocesses is distracting while profiling the solver's CPU usage. *)
+  if true then [] else (
+    Eio.Semaphore.acquire oldest_commit;
+    Fun.protect ~finally:(fun () -> Eio.Semaphore.release oldest_commit) @@ fun () ->
+    Git_clone.oldest_commits_with t repo_packages ~from
+  )
 
 (* We could do this in parallel, except that there might be duplicate repos in the list. *)
 let rec fetch_commits t = function
