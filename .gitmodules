@@ -1,0 +1,4 @@
+[submodule "vendor/opam-0install-solver"]
+	path = vendor/opam-0install-solver
+	url = https://github.com/talex5/opam-0install-solver.git
+	branch = atomic-ids
