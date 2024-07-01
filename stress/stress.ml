@@ -1,6 +1,8 @@
 (* This stress test is for the underlying solver-service library
    that the workers use to solve dependencies. *)
 
+let () = Memtrace.trace_if_requested ~context:"solver-test" ()
+
 let packages = Packages.of_commit "../opam-repository/packages"
 
 let request = [OpamPackage.Name.of_string "0install-solver"]
