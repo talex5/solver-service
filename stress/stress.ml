@@ -37,8 +37,9 @@ let main n_workers count fork =
   let before = Unix.gettimeofday () in
   let domains =
     let spawn = if fork then spawn_child else spawn_domain in
-    List.init n_workers (fun _ -> spawn (fun () -> run_worker packages count))
+    List.init (n_workers - 1) (fun _ -> spawn (fun () -> run_worker packages count))
   in
+  run_worker packages count;    (* Also do work in main domain *)
   List.iter (fun f -> f ()) domains;
   let time = Unix.gettimeofday () -. before in
   let rate = float requests /. time in
