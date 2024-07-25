@@ -5,7 +5,13 @@ let packages = Packages.of_commit "../opam-repository/packages"
 
 let request = [OpamPackage.Name.of_string "0install-solver"]
 
-let run_worker packages n =
+let cpus = Array.of_list Processor.Topology.t
+
+let run_worker ~affinity id packages n =
+  affinity |> Option.iter (fun affinity ->
+      List.init affinity (fun offset -> cpus.((id + offset) * affinity))
+      |> Processor.Affinity.set_cpus
+    );
   for _i = 1 to n do
     ignore @@ Domain_worker.solve packages request;
   done
@@ -23,7 +29,8 @@ let spawn_domain fn =
   let d = Domain.spawn fn in
   fun () -> Domain.join d
 
-let main n_workers count fork =
+let main n_workers count fork affinity =
+  let run_worker = run_worker ~affinity in
   Format.printf "Running in %s mode@." (if fork then "fork" else "domain");
   let requests = count * n_workers in
   (* Warm-up *)
@@ -37,9 +44,9 @@ let main n_workers count fork =
   let before = Unix.gettimeofday () in
   let domains =
     let spawn = if fork then spawn_child else spawn_domain in
-    List.init (n_workers - 1) (fun _ -> spawn (fun () -> run_worker packages count))
+    List.init (n_workers - 1) (fun i -> spawn (fun () -> run_worker (i + 1) packages count))
   in
-  run_worker packages count;    (* Also do work in main domain *)
+  run_worker 0 packages count;    (* Also do work in main domain *)
   List.iter (fun f -> f ()) domains;
   let time = Unix.gettimeofday () -. before in
   let rate = float requests /. time in
@@ -61,6 +68,11 @@ let count =
   @@ Arg.opt Arg.int 3
   @@ Arg.info ~doc:"The number of requests to send per worker" ~docv:"N" [ "count" ]
 
+let affinity =
+  Arg.value
+  @@ Arg.opt Arg.(some int) None
+  @@ Arg.info ~doc:"CPUs per domain" [ "affinity" ]
+
 let fork =
   Arg.value
   @@ Arg.flag
@@ -69,7 +81,7 @@ let fork =
 let stress_local =
   let doc = "Run jobs using an in-process solver" in
   let info = Cmd.info "local" ~doc in
-  Cmd.v info Term.(const main $ internal_workers $ count $ fork)
+  Cmd.v info Term.(const main $ internal_workers $ count $ fork $ affinity)
 
 let () =
   exit @@ Cmd.eval @@ stress_local

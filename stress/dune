@@ -3,6 +3,7 @@
  (public_name test-solver)
  (package solver-service)
  (libraries
+  processor
   opam-0install
   logs.cli
   logs.fmt
