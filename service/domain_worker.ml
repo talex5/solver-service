@@ -30,6 +30,7 @@ let env (vars : Worker.Vars.t) v =
     None
 
 let solve { packages; root_pkgs; pinned_pkgs; vars; cancelled } =
+  Switch.run ~name:"solve" @@ fun _ ->  (* XXX: debugging *)
   match cancelled with
   | Some p when Promise.is_resolved p -> Error (`Msg "Cancelled")
   | _ ->

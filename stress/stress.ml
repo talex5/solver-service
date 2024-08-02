@@ -143,7 +143,7 @@ let benchmark (config:Config.t) solve =
   Format.printf "Running another %d solves...@." config.count;
   let before = Unix.gettimeofday () in
   let complete = ref 0 in
-  Switch.run (fun sw ->
+  Switch.run ~name:"stress-run" (fun sw ->
       expected |> Seq.iter (fun (req, expected) ->
           Fiber.fork ~sw (fun () ->
               let resp = solve req in
@@ -155,6 +155,7 @@ let benchmark (config:Config.t) solve =
                   (Solver_service_api.Worker.Solve_response.to_yojson resp);
               );
               incr complete;
+              Eio.Private.Trace.log "complete";
               Printf.printf "\r%d/%d complete%!" !complete config.count
             )
         )
