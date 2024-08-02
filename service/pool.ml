@@ -15,9 +15,9 @@ let rec run_worker t handle =
    As a work-around, we also run jobs in the main domain so it doesn't become idle.
    This makes the service less responsive (e.g. at reporting progress messages)
    but increases throughput. *)
-let run_main_worker t handle =
+let run_main_worker ~n_workers t handle =
   while true do
-    for _ = 1 to 10 do Fiber.yield () done;
+    for _ = 1 to n_workers * 2 do Fiber.yield () done;
     match Eio.Stream.take_nonblocking t.work with
     | None -> Eio.Condition.await_no_mutex t.do_main
     | Some (request, set_reply) -> handle request |> Promise.resolve set_reply
@@ -29,7 +29,7 @@ let create ~sw ~domain_mgr ~n_workers ~main_does_work handle =
     do_main = Eio.Condition.create ();
   } in
   if main_does_work then
-    Fiber.fork_daemon ~sw (fun () -> run_main_worker t handle);
+    Fiber.fork_daemon ~sw (fun () -> run_main_worker ~n_workers t handle);
   for _i = 1 to n_workers do
     Fiber.fork_daemon ~sw (fun () ->
         Eio.Domain_manager.run domain_mgr (fun () -> run_worker t handle)
