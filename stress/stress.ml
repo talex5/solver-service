@@ -147,7 +147,13 @@ let benchmark (config:Config.t) solve =
       expected |> Seq.iter (fun (req, expected) ->
           Fiber.fork ~sw (fun () ->
               let resp = solve req in
-              assert (resp = expected);
+              if resp <> expected then (
+                Fmt.failwith "Unexpected response.@.Expected: %a@.Got: %a" 
+                  (Yojson.Safe.pretty_print ?std:None)
+                  (Solver_service_api.Worker.Solve_response.to_yojson expected)
+                  (Yojson.Safe.pretty_print ?std:None)
+                  (Solver_service_api.Worker.Solve_response.to_yojson resp);
+              );
               incr complete;
               Printf.printf "\r%d/%d complete%!" !complete config.count
             )
