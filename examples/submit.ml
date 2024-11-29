@@ -131,10 +131,11 @@ let pipeline ~cluster vars () =
   selection
 
 let main () config mode submission_uri =
+  Lwt_eio.run_lwt @@ fun () ->
+  let open Lwt.Syntax in
   let vat = Capnp_rpc_unix.client_only_vat () in
-  let vars =
-    Lwt_main.run
-    @@ Solve.get_vars ~ocaml_package_name:"obuilder" ~ocaml_version:"4.13.1" ()
+  let* vars =
+    Solve.get_vars ~ocaml_package_name:"obuilder" ~ocaml_version:"4.13.1" ()
   in
   let submission_cap = Capnp_rpc_unix.Vat.import_exn vat submission_uri in
   let cluster = Current_ocluster.Connection.create submission_cap in
@@ -144,8 +145,7 @@ let main () config mode submission_uri =
       ~name:program_name
       (Current_web.routes engine)
   in
-  Lwt_main.run
-    (Lwt.choose [ Current.Engine.thread engine; Current_web.run ~mode site ])
+  Lwt.choose [ Current.Engine.thread engine; Current_web.run ~mode site ]
 
 (* Command-line parsing *)
 
@@ -172,4 +172,8 @@ let cmd =
         $ Current_web.cmdliner
         $ submission_service))
 
-let () = Cmd.(exit @@ eval cmd)
+let () =
+  exit @@
+  Eio_main.run @@ fun env ->
+  Lwt_eio.with_event_loop ~clock:env#clock @@ fun () ->
+  Cmd.eval cmd
