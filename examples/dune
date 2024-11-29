@@ -11,6 +11,7 @@
   fmt.tty
   logs.cli
   logs.fmt
+  mirage-crypto-rng-eio
   ocluster-api
   solver-service-api)
  (action (progn)))

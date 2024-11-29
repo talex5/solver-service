@@ -40,54 +40,41 @@ let setup_log style_renderer level =
   ()
 
 let export service ~on:socket =
-  Lwt_eio.run_lwt @@ fun () ->
-  let open Lwt.Syntax in
+  Switch.run @@ fun sw ->
   let restore =
     Capnp_rpc_net.Restorer.single
       (Capnp_rpc_net.Restorer.Id.public "solver")
       service
   in
-  let switch = Lwt_switch.create () in
-  let stdin =
-    Capnp_rpc_unix.Unix_flow.connect socket
-    |> Capnp_rpc_net.Endpoint.of_flow
-      (module Capnp_rpc_unix.Unix_flow)
-      ~peer_id:Capnp_rpc_net.Auth.Digest.insecure ~switch
-  in
-  let (_ : Capnp_rpc_unix.CapTP.t) =
-    Capnp_rpc_unix.CapTP.connect ~restore stdin
-  in
-  let crashed, set_crashed = Lwt.wait () in
-  let* () =
-    Lwt_switch.add_hook_or_exec (Some switch) (fun () ->
-        Lwt.wakeup_exn set_crashed (Failure "Capnp switch turned off");
-        Lwt.return_unit)
-  in
-  crashed
+  Fiber.fork ~sw Capnp_rpc.Leak_handler.run;
+  Eio_unix.Net.import_socket_stream ~sw ~close_unix:false socket
+  |> Capnp_rpc_net.Endpoint.of_flow ~peer_id:Capnp_rpc_net.Auth.Digest.insecure
+  |> Capnp_rpc_unix.CapTP.connect ~sw ~restore
+  |> Capnp_rpc_unix.CapTP.run
 
-let start_server ~service vat_config =
-  let open Lwt.Syntax in
-  Lwt_eio.run_lwt @@ fun () ->
+let start_server ~sw ~service vat_config =
   let service_id =
     Capnp_rpc_unix.Vat_config.derived_id vat_config "solver-service"
   in
   let restore = Capnp_rpc_net.Restorer.single service_id service in
-  let+ vat = Capnp_rpc_unix.serve vat_config ~restore in
+  let vat = Capnp_rpc_unix.serve ~sw vat_config ~restore in
   Capnp_rpc_unix.Vat.sturdy_uri vat service_id
 
 let main_service () solver cap_file vat_config =
-  let uri = start_server ~service:(Solver_service.Service.v solver) vat_config in
+  Switch.run @@ fun sw ->
+  let uri = start_server ~sw ~service:(Solver_service.Service.v solver) vat_config in
   Capnp_rpc_unix.Cap_file.save_uri uri cap_file |> or_die;
   Fmt.pr "Wrote solver service's address to %S@." cap_file;
   Fiber.await_cancel ()
 
 let main_service_pipe () solver =
-  let socket = Lwt_unix.stdin in
+  let socket = Unix.stdin in
   (* Run locally reading from socket *)
   export (Solver_service.Service.v solver) ~on:socket
 
-let main_cluster () solver name capacity register_addr =
-  let vat = Capnp_rpc_unix.client_only_vat () in
+let main_cluster net () solver name capacity register_addr =
+  Switch.run @@ fun sw ->
+  let vat = Capnp_rpc_unix.client_only_vat ~sw net in
   let sr = Capnp_rpc_unix.Vat.import_exn vat register_addr in
   let `Cancelled =
     Solver_worker.run solver sr
@@ -152,6 +139,7 @@ let () =
   let info = Cmd.info "solver-service" ~doc ~version in
   exit @@
   Eio_main.run @@ fun env ->
+  Mirage_crypto_rng_eio.run (module Mirage_crypto_rng.Fortuna) env @@ fun () ->
   let domain_mgr = env#domain_mgr in
   let process_mgr = env#process_mgr in
   Switch.run @@ fun sw ->
@@ -167,7 +155,7 @@ let () =
     let doc = "run solver as a stand-alone service" in
     let info = Cmd.info "run-service" ~doc ~version in
     Cmd.v info (
-      main_service $$ setup_log $ solver $ cap_file $ Capnp_rpc_unix.Vat_config.cmd
+      main_service $$ setup_log $ solver $ cap_file $ Capnp_rpc_unix.Vat_config.cmd env
     )
   in
   let run_service_pipe =
@@ -179,7 +167,7 @@ let () =
     let doc = "run solver as a cluster worker agent" in
     let info = Cmd.info "run-cluster" ~doc ~version in
     Cmd.v info (
-      main_cluster $$ setup_log $ solver $ worker_name $ capacity $ register_addr
+      main_cluster env#net $$ setup_log $ solver $ worker_name $ capacity $ register_addr
     )
   in
   Cmd.eval @@ Cmd.group info [ run_service; run_service_pipe; run_agent ]

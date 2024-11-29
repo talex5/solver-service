@@ -1,4 +1,5 @@
 (* This example assumes the solver service to be running *)
+open Eio.Std
 open Lwt.Syntax
 
 let job_log ch =
@@ -62,6 +63,7 @@ let get_opam_file ~process_mgr pv =
   Eio.Process.parse_out process_mgr Eio.Buf_read.take_all ["opam"; "show"; "--raw"; pv]
 
 let run_client ~process_mgr ~package ~version ~ocaml_version ~opam_commit service =
+  Lwt_eio.run_lwt @@ fun () ->
   let pv = package ^ "." ^ version in
   let* platform =
     get_vars ~process_mgr ~ocaml_package_name:"ocaml-base-compiler" ~ocaml_version ()
@@ -93,9 +95,9 @@ let run_client ~process_mgr ~package ~version ~ocaml_version ~opam_commit servic
   | Error `Cancelled -> Fmt.failwith "Job Cancelled"
 
 let connect env package version ocaml_version opam_commit uri =
+  Switch.run @@ fun sw ->
   let process_mgr = env#process_mgr in
-  Lwt_eio.run_lwt @@ fun () ->
-  let client_vat = Capnp_rpc_unix.client_only_vat () in
+  let client_vat = Capnp_rpc_unix.client_only_vat ~sw env#net in
   let sr = Capnp_rpc_unix.Vat.import_exn client_vat uri in
   Capnp_rpc_unix.with_cap_exn sr
     (run_client ~process_mgr ~package ~version ~ocaml_version ~opam_commit)
@@ -142,5 +144,6 @@ let connect_cmd env =
 let () =
   exit @@
   Eio_main.run @@ fun env ->
+  Mirage_crypto_rng_eio.run (module Mirage_crypto_rng.Fortuna) env @@ fun () ->
   Lwt_eio.with_event_loop ~clock:env#clock @@ fun () ->
   Cmd.eval (connect_cmd env)

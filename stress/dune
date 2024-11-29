@@ -11,6 +11,7 @@
   fmt.cli
   fmt.tty
   capnp-rpc-unix
+  mirage-crypto-rng-eio
   lwt_eio
   eio_main)
  (action (progn)))

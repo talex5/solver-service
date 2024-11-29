@@ -244,9 +244,7 @@ module Stress_service = struct
 
   let main vat uri config =
     let sr = Capnp_rpc_unix.Vat.import_exn vat uri in
-    Lwt_eio.run_lwt @@ fun () ->
     Capnp_rpc_unix.with_cap_exn sr @@ fun solver ->
-    Lwt_eio.run_eio @@ fun () ->
     benchmark config (fun request ->
         Lwt_eio.run_lwt @@ fun () ->
         Solver_service_api.Solver.solve solver ~log request
@@ -287,9 +285,7 @@ module Stress_cluster = struct
 
   let main vat uri pool config =
     let sr = Capnp_rpc_unix.Vat.import_exn vat uri in
-    Lwt_eio.run_lwt @@ fun () ->
     Capnp_rpc_unix.with_cap_exn sr @@ fun sched ->
-    Lwt_eio.run_eio @@ fun () ->
     benchmark config (solve_with_cluster ~pool sched)
 end
 
@@ -315,10 +311,12 @@ let solver_pool =
 
 let () =
   exit @@ Eio_main.run @@ fun env ->
+  Mirage_crypto_rng_eio.run (module Mirage_crypto_rng.Fortuna) env @@ fun () ->
   Lwt_eio.with_event_loop ~clock:env#clock @@ fun () ->
   let ( / ) = Eio.Path.( / ) in
   let test_packages = env#cwd / "stress/test-packages" in
-  let vat = Capnp_rpc_unix.client_only_vat () in
+  Switch.run @@ fun sw ->
+  let vat = Capnp_rpc_unix.client_only_vat ~sw env#net in
   let stress_service vat =
     let doc = "Submit solve jobs to a solver service" in
     let info = Cmd.info "service" ~doc in
