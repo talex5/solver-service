@@ -1,7 +1,9 @@
+open Eio.Std
+
 module Worker = Solver_service_api.Worker
 
 let v t =
-  let open Capnp_rpc_lwt in
+  let open Capnp_rpc.Std in
   let module X = Solver_service_api.Raw.Service.Solver in
   X.local
   @@ object
@@ -15,26 +17,24 @@ let v t =
       match log with
       | None -> Service.fail "Missing log argument!"
       | Some log ->
-        Capnp_rpc_lwt.Service.return_lwt @@ fun () ->
         Capability.with_ref log @@ fun log ->
         match
           Worker.Solve_request.of_yojson
             (Yojson.Safe.from_string request)
         with
         | Error msg ->
-          Lwt_result.fail
-            (`Capnp
-               (Capnp_rpc.Error.exn "Bad JSON in request: %s" msg))
+          Service.error (Capnp_rpc.Error.exn "Bad JSON in request: %s" msg)
         | Ok request ->
-          Lwt_eio.run_eio @@ fun () ->
+          Switch.run @@ fun sw ->
+          let log = Solver_service_api.Solver.Log.make ~sw log in
           let selections = Solver.solve t ~log request in
           let json =
             Yojson.Safe.to_string
               (Worker.Solve_response.to_yojson selections)
           in
           let response, results =
-            Capnp_rpc_lwt.Service.Response.create Results.init_pointer
+            Capnp_rpc.Service.Response.create Results.init_pointer
           in
           Results.response_set results json;
-          Ok response
+          Service.return response
   end

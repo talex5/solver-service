@@ -1,3 +1,5 @@
+open Eio.Std
+
 let verbose = false
 
 let add_opam_header s =
@@ -114,7 +116,7 @@ let stderr_log =
         output_string stderr msg;
         flush stderr;
       );
-      Capnp_rpc_lwt.Service.return_empty ()
+      Capnp_rpc.Service.return_empty ()
   end
 
 let pp_packages = Fmt.Dump.list (Fmt.using fst Fmt.string)
@@ -151,5 +153,7 @@ let solve ?cancelled ?(pinned_pkgs=[]) t label ~commits ~root_pkgs ~platforms =
               platforms;
             }
   in
-  let response = Solver_service.Solver.solve ?cancelled t ~log:stderr_log req in
+  Switch.run @@ fun sw ->
+  let log = Solver_service_api.Solver.Log.make ~sw stderr_log in
+  let response = Solver_service.Solver.solve ?cancelled t ~log req in
   Fmt.pr "@[<v2>results:@,%a@]@." pp_response response

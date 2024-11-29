@@ -114,7 +114,9 @@ let test_errors t =
       platforms;
     }
   in
-  let response = Solver_service.Solver.solve t ~log:stderr_log req in
+  Switch.run @@ fun sw ->
+  let log = Solver_service_api.Solver.Log.make ~sw stderr_log in
+  let response = Solver_service.Solver.solve t ~log req in
   Fmt.pr "@[<v2>results:@,%a@]@." pp_response response;
   Fmt.pr "@.## Invalid repository@.@.";
   let req =
@@ -125,14 +127,16 @@ let test_errors t =
       platforms;
     }
   in
-  let response = Solver_service.Solver.solve t ~log:stderr_log req in
+  let response = Solver_service.Solver.solve t ~log req in
   Fmt.pr "@[<v2>results:@,%a@]@." pp_response response
 
 let test_double_fetch t =
   Fmt.pr "@.";
   let opam_repo = Opam_repo.create "opam-repo.git" in
   let root_pkgs = ["app.dev", Utils.add_opam_header ""] in
-  let test req = Solver_service.Solver.solve t ~log:stderr_log req in
+  Switch.run @@ fun sw ->
+  let log = Solver_service_api.Solver.Log.make ~sw stderr_log in
+  let test req = Solver_service.Solver.solve t ~log req in
   let good_commit =
     Opam_repo.commit opam_repo [
       "ocaml-base-compiler.5.0", {|synopsis: "Force fetch"|};

@@ -183,7 +183,7 @@ let log =
       release_param_caps ();
       let msg = Params.msg_get params in
       if verbose then output_string stderr msg;
-      Capnp_rpc_lwt.Service.(return (Response.create_empty ()))
+      Capnp_rpc.Service.return_empty ()
   end
 
 module Stress_local = struct
@@ -203,7 +203,6 @@ module Stress_local = struct
     in
     let service = Solver_service.Service.v solver in
     benchmark config (fun request ->
-        Lwt_eio.run_lwt @@ fun () ->
         Solver_service_api.Solver.solve service ~log request
       )
 
@@ -239,21 +238,20 @@ module Stress_service = struct
         release_param_caps ();
         let msg = Params.msg_get params in
         if verbose then output_string stderr msg;
-        Capnp_rpc_lwt.Service.(return (Response.create_empty ()))
+        Capnp_rpc.Service.return_empty ()
     end
 
   let main vat uri config =
     let sr = Capnp_rpc_unix.Vat.import_exn vat uri in
     Capnp_rpc_unix.with_cap_exn sr @@ fun solver ->
     benchmark config (fun request ->
-        Lwt_eio.run_lwt @@ fun () ->
         Solver_service_api.Solver.solve solver ~log request
       )
 end
 
 module Stress_cluster = struct
   open Lwt.Infix
-  open Capnp_rpc_lwt
+  open Capnp_rpc.Std
 
   module Worker = Solver_service_api.Worker
 
@@ -269,13 +267,13 @@ module Stress_cluster = struct
       @@ Cluster_api.Custom.v ~kind:"solve"
       @@ solve_to_custom request
     in
-    Lwt_eio.run_lwt @@ fun () ->
     Capability.with_ref (Cluster_api.Submission.submit sched
                            ~action
                            ~urgent:false
                            ~pool
                            ~cache_hint:"") @@ fun ticket ->
     Capability.with_ref (Cluster_api.Ticket.job ticket) @@ fun build_job ->
+    Lwt_eio.run_lwt @@ fun () ->
     Cluster_api.Job.result build_job >>= function
     | Error (`Capnp e) -> Fmt.failwith "%a" Capnp_rpc.Error.pp e
     | Ok response ->

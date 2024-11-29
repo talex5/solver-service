@@ -4,7 +4,7 @@
 
 open Eio.Std
 open Lwt.Infix
-open Capnp_rpc_lwt
+open Capnp_rpc.Std
 
 let min_reconnect_time = 10.0
 (* Don't try to connect more than once per 10 seconds *)
@@ -66,6 +66,7 @@ let build ~cancelled ~log t descr =
     (Error (`Msg msg), "build failed")
 
 let loop t queue =
+  Lwt_eio.run_lwt @@ fun () ->
   let rec loop () =
     if t.in_use >= t.capacity then (
       Log.info (fun f ->
@@ -128,7 +129,6 @@ let loop t queue =
 let self_update () = failwith "TODO: Self-update"
 
 let run ~name ~capacity solver registration_service =
-  Lwt_eio.run_lwt @@ fun () ->
   let t = {
     solver;
     name;
@@ -137,35 +137,32 @@ let run ~name ~capacity solver registration_service =
     capacity;
     in_use = 0;
   } in
-  let rec reconnect () =
+  while true do
     let connect_time = Unix.gettimeofday () in
-    Lwt.catch
-      (fun () ->
-         Sturdy_ref.connect_exn t.registration_service >>= fun reg ->
-         Capability.with_ref reg @@ fun reg ->
-         let queue =
-           let api = Cluster_api.Worker.local ~metrics ~self_update () in
-           let queue = Cluster_api.Registration.register reg ~name ~capacity api in
-           Capability.dec_ref api;
-           queue
-         in
-         Capability.with_ref queue @@ fun queue ->
-         Lwt.catch
-           (fun () -> loop t queue)
-           (fun ex ->
-              Lwt.pause () >>= fun () ->
-              match Capability.problem queue with
-              | Some problem ->
-                Log.info (fun f -> f "Worker loop failed (probably because queue connection failed): %a" Fmt.exn ex);
-                Lwt.fail (Failure (Fmt.to_to_string Capnp_rpc.Exception.pp problem))    (* Will retry *)
-              | None ->
-                raise ex
-           )
-      )
-      (fun ex ->
-         let delay = max 0.0 (connect_time +. min_reconnect_time -. Unix.gettimeofday ()) in
-         Log.info (fun f -> f "Lost connection to scheduler (%a). Will retry in %.1fs…" Fmt.exn ex delay);
-         Lwt_unix.sleep delay >>= reconnect
-      )
-  in
-  reconnect ()
+    try
+      let reg = Sturdy_ref.connect_exn t.registration_service in
+      Capability.with_ref reg @@ fun reg ->
+      let queue =
+        let api = Cluster_api.Worker.local ~metrics ~self_update () in
+        let queue = Cluster_api.Registration.register reg ~name ~capacity api in
+        Capability.dec_ref api;
+        queue
+      in
+      Capability.with_ref queue @@ fun queue ->
+      let `Never_returns =
+        try
+          loop t queue
+        with ex ->
+          Fiber.yield ();
+          match Capability.problem queue with
+          | Some problem ->
+            Log.info (fun f -> f "Worker loop failed (probably because queue connection failed): %a" Fmt.exn ex);
+            Fmt.failwith "%a" Capnp_rpc.Exception.pp problem    (* Will retry *)
+          | None ->
+            raise ex
+      in ()
+    with ex ->
+      let delay = max 0.0 (connect_time +. min_reconnect_time -. Unix.gettimeofday ()) in
+      Log.info (fun f -> f "Lost connection to scheduler (%a). Will retry in %.1fs…" Fmt.exn ex delay);
+      Eio_unix.sleep delay
+  done

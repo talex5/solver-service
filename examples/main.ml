@@ -14,7 +14,7 @@ let job_log ch =
          let msg = Params.msg_get params in
          output_string ch msg;
          flush ch;
-         Capnp_rpc_lwt.Service.(return (Response.create_empty ()))
+         Capnp_rpc.Service.return_empty ()
      end
 
 (* ~~~ Solver client ~~~ *)
@@ -79,8 +79,9 @@ let run_client ~process_mgr ~package ~version ~ocaml_version ~opam_commit servic
         platforms = [ (platform.os, platform) ];
       }
   in
-  Capnp_rpc_lwt.Capability.with_ref (job_log stderr) @@ fun log ->
-  let+ response = Solver_service_api.Solver.solve service ~log request in
+  Lwt_eio.run_eio @@ fun () ->
+  Capnp_rpc.Capability.with_ref (job_log stderr) @@ fun log ->
+  let response = Solver_service_api.Solver.solve service ~log request in
   match response with
   | Ok selections ->
       selections

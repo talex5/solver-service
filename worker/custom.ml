@@ -1,3 +1,5 @@
+open Eio.Std
+
 let (let*!) = Result.bind
 
 let solve_of_custom c =
@@ -25,16 +27,16 @@ let cluster_worker_log log =
       release_param_caps ();
       let msg = Params.msg_get params in
       Log_data.write log msg;
-      Capnp_rpc_lwt.Service.return_empty ()
+      Capnp_rpc.Service.return_empty ()
   end
 
 let solve ~cancelled ~solver ~log c =
   let selections =
     let*! request = solve_of_custom c in
     let log = cluster_worker_log log in
-    Lwt_eio.run_lwt @@ fun () ->
-    Capnp_rpc_lwt.Capability.with_ref log @@ fun log ->
-    Lwt_eio.run_eio @@ fun () ->
+    Capnp_rpc.Capability.with_ref log @@ fun log ->
+    Switch.run @@ fun sw ->
+    let log = Solver_service_api.Solver.Log.make ~sw log in
     Solver_service.Solver.solve ~cancelled solver ~log request
   in
   begin match selections with

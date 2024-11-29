@@ -45,6 +45,6 @@
  (depends
   (ocaml (>= 4.14.1))
   (capnp (>= 3.5.0))
-  (capnp-rpc-lwt (>= 1.2.3))
+  (capnp-rpc (>= 2.0))
   (ppx_deriving_yojson (>= 3.6.1))
   (ppx_deriving (>= 5.1))))
